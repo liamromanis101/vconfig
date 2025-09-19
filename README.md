@@ -2,7 +2,7 @@
 VCONFIG is going to be deprecated soon and I will miss it. So I created a new version which uses 'ip' undere the hood for those of us who are a bit Old Skool!
 
 # Usage
-text"""
+
 vconfig.py — a vconfig-compatible wrapper implemented with ip(8).
 
 Usage (same as vconfig -h):
@@ -22,7 +22,7 @@ Notes:
 - Only creates/deletes VLAN links; it does not bring links up (mirrors vconfig).
 - set_flag supports: 1=reorder_hdr, 2=gvrp, 3=mvrp, 4=loose_binding.
 - VLAN IDs are normalized to decimal (avoid octal/hex pitfalls).
-"""
+
 
 # Example Usage
 
