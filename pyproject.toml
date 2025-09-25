@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vconfig-cli"  # <-- pick a unique name; cannot be "vconfig"
+version = "0.1.0"
+description = "vconfig wrapper for 'ip' to create vlans after deprecation of linux vconfig"
+readme = { file = "README.md", content-type = "text/markdown" }
+requires-python = ">=3.8"
+authors = [{ name = "Liam Romanis", email = "liamromanis101@btinternet.com" }]
+license = { file = "LICENSE" }
+keywords = ["vconfig", "cli", "vlan", "ip"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "License :: OSI Approved :: MIT License",
+]
+
+# If your script imports anything external, list them here, e.g.:
+# dependencies = ["pyyaml>=6"]
+
+[project.urls]
+Homepage = "https://github.com/liamromanis101/vconfig-cli"
+Issues = "https://github.com/liamromanis101/vconfig-cli/issues"
+
+[tool.setuptools]
+# Single-file module:
+py-modules = ["vconfig_cli"]
+
+[project.scripts]
+# Creates a `vconfig` command that runs vconfig.main(
+vconfig-cli = "vconfig_cli:main"
