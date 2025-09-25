@@ -1,50 +1,32 @@
 #!/usr/bin/env python3
 """
-vconfig.py — a vconfig-compatible wrapper implemented with ip(8).
+vconfig.py — a vconfig-like wrapper implemented with ip(8).
 Liam Romanis
-https://github.com/liamromanis101
+https://github.com/liamromanis101/vconfig
 
-Usage (same as vconfig -h):
+Usage:
 
-  add [interface-name] [vlan_id]
+  add [interface-name] [vlan_id] [-name IFNAME]
   rem [vlan-name]
   set_flag [vlan-name] [flag-num] [0|1]
-  set_flag [vlan-name] [0|1]            # compatibility: reorder_hdr only
+  set_flag [vlan-name] [0|1]
   set_egress_map [vlan-name] [skb_priority] [vlan_qos]
   set_ingress_map [vlan-name] [skb_priority] [vlan_qos]
-  set_name_type [name-type]
-
-name-type one of:
-  VLAN_PLUS_VID (vlan0005),
-  VLAN_PLUS_VID_NO_PAD (vlan5),
-  DEV_PLUS_VID (eth0.0005),
-  DEV_PLUS_VID_NO_PAD (eth0.5)
 
 Notes:
-- Only creates/deletes VLAN links; it does not bring links up (mirrors vconfig).
+- Only creates/deletes VLAN links; it does not bring links up.
 - set_flag supports: 1=reorder_hdr, 2=gvrp, 3=mvrp, 4=loose_binding.
-- VLAN IDs are normalized to decimal (avoid octal/hex pitfalls).
-- fix for invalid ifname when device name is too long
+- VLAN IDs are decimal (1..4094).
+- On too-long/invalid interface names, the tool will prompt you for a shorter one.
 """
 
 import os
 import sys
 import subprocess
 import shlex
-import errno
-import json
 import re
 
-STATE_FILE = "/run/vconfig_name_type"
-DEFAULT_NAME_TYPE = "DEV_PLUS_VID_NO_PAD"
-ALLOWED_NAME_TYPES = {
-    "VLAN_PLUS_VID",
-    "VLAN_PLUS_VID_NO_PAD",
-    "DEV_PLUS_VID",
-    "DEV_PLUS_VID_NO_PAD",
-}
-
-# ---- ifname recovery helpers ------------------------------------------------
+# ---- ifname / retry helpers -------------------------------------------------
 
 # Kernel IFNAMSIZ is 16 (including trailing NUL) → 15 visible chars
 IFNAMSIZ = 16
@@ -54,7 +36,7 @@ MAX_IFNAME_LEN = IFNAMSIZ - 1
 _INVALID_IFNAME_RE = re.compile(r"(invalid ifname|not a valid ifname)", re.IGNORECASE)
 
 
-def _valid_ifname(name: str) -> bool:
+def _valid_ifname(name):
     if not name or len(name) > MAX_IFNAME_LEN:
         return False
     if any(ch.isspace() for ch in name):
@@ -64,7 +46,7 @@ def _valid_ifname(name: str) -> bool:
     return True
 
 
-def _prompt_for_ifname(suggest: str | None = None) -> str:
+def _prompt_for_ifname(suggest=None):
     """
     Ask the user for a valid interface name (≤15 chars, no whitespace or '/').
     Keeps prompting until a valid-looking name is entered.
@@ -84,7 +66,7 @@ def _prompt_for_ifname(suggest: str | None = None) -> str:
         print(f"'{name}' is not a valid ifname. It must be ≤{MAX_IFNAME_LEN} chars, with no whitespace or '/'. Try again.")
 
 
-def _replace_or_inject_name(cmd: list[str], new_name: str) -> list[str]:
+def _replace_or_inject_name(cmd, new_name):
     """
     Replace token after 'name' if present; otherwise inject 'name <new_name>'
     before 'type vlan' if found, else append at end.
@@ -107,7 +89,7 @@ def _replace_or_inject_name(cmd: list[str], new_name: str) -> list[str]:
         return cmd2 + ["name", new_name]
 
 
-def _extract_name_from_cmd(cmd: list[str]) -> str | None:
+def _extract_name_from_cmd(cmd):
     try:
         i = cmd.index("name")
         if i + 1 < len(cmd):
@@ -117,13 +99,13 @@ def _extract_name_from_cmd(cmd: list[str]) -> str | None:
     return None
 
 
-def run_ip_with_ifname_retry(cmd: list[str], vid: int | None = None) -> tuple[subprocess.CompletedProcess, str]:
+def run_ip_with_ifname_retry(cmd, vid=None):
     """
     Run ip(8) with recovery for 'invalid ifname' errors:
-    - If ip returns an invalid/too-long ifname error, silently prompt the user
+    - If ip returns an invalid/too-long ifname error, prompt the user
       for a shorter name (default suggestion: vlan<VID>) and retry.
     - If ip rejects the new name the same way, re-prompt.
-    - For any other failure, abort with the original error (like run()).
+    - For any other failure, abort with the real error (like run()).
 
     Returns: (CompletedProcess, final_interface_name)
     """
@@ -137,10 +119,9 @@ def run_ip_with_ifname_retry(cmd: list[str], vid: int | None = None) -> tuple[su
 
         combined = (proc.stderr or "") + (proc.stdout or "")
         if _INVALID_IFNAME_RE.search(combined):
-            # Suggest something short like vlan<VID>
             suggested = f"vlan{vid}" if vid is not None else None
 
-            # Non-interactive (e.g., piped): try one automatic fallback then give up
+            # Non-interactive: try one automatic fallback then bail
             if not sys.stdin.isatty():
                 auto = suggested or "vlan0"
                 if not _valid_ifname(auto):
@@ -162,14 +143,13 @@ def run_ip_with_ifname_retry(cmd: list[str], vid: int | None = None) -> tuple[su
                 if _INVALID_IFNAME_RE.search(combined2):
                     print(f"'{new_name}' was rejected by ip(8). Let's try another.")
                     continue
-                # Some other error; bail with that message
                 die(proc2.stderr.strip() or f"command failed: {' '.join(map(shlex.quote, current_cmd))}")
 
         # Not an ifname error — behave like run()
         die(proc.stderr.strip() or f"command failed: {' '.join(map(shlex.quote, current_cmd))}")
 
 
-# ---- stock helpers from original script ------------------------------------
+# ---- stock helpers ----------------------------------------------------------
 
 def die(msg, code=1):
     print(f"vconfig: {msg}", file=sys.stderr)
@@ -193,65 +173,63 @@ def ensure_8021q():
         run(["modprobe", "8021q"])
 
 
-def read_name_type():
-    try:
-        with open(STATE_FILE, "r") as f:
-            t = f.read().strip()
-            if t in ALLOWED_NAME_TYPES:
-                return t
-    except FileNotFoundError:
-        pass
-    return DEFAULT_NAME_TYPE
-
-
-def write_name_type(t):
-    if t not in ALLOWED_NAME_TYPES:
-        die(f"unknown name-type '{t}'")
-    os.makedirs(os.path.dirname(STATE_FILE), exist_ok=True)
-    with open(STATE_FILE, "w") as f:
-        f.write(t)
-
-
 def parse_vlan_id(s):
-    # vconfig historically expects decimal; normalize to decimal to avoid ip(8) octal/hex surprises
     try:
         vid = int(s, 10)
     except ValueError:
         die(f"invalid vlan_id '{s}' (use decimal)")
-    if not (0 <= vid <= 4094):
-        die("vlan_id must be in range 0..4094")
+    if not (1 <= vid <= 4094):
+        die("vlan_id must be in range 1..4094")
     return vid
-
-
-def vlan_name(parent, vid, name_type):
-    if name_type == "VLAN_PLUS_VID":
-        return f"vlan{vid:04d}"
-    if name_type == "VLAN_PLUS_VID_NO_PAD":
-        return f"vlan{vid}"
-    if name_type == "DEV_PLUS_VID":
-        return f"{parent}.{vid:04d}"
-    if name_type == "DEV_PLUS_VID_NO_PAD":
-        return f"{parent}.{vid}"
-    return f"{parent}.{vid}"
 
 
 # ---- commands ---------------------------------------------------------------
 
+def _extract_name_opt(args):
+    """
+    Extract -name/--name IFNAME from a free-form argv slice.
+    Returns (ifname or None, remaining_args).
+    """
+    name = None
+    rest = []
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a in ("-name", "--name"):
+            if i + 1 >= len(args):
+                die("'-name' requires a value")
+            name = args[i + 1]
+            i += 2
+            continue
+        rest.append(a)
+        i += 1
+    return name, rest
+
+
 def cmd_add(args):
-    if len(args) != 2:
-        die("usage: add [interface-name] [vlan_id]")
-    parent, vid_s = args
+    # add [interface-name] [vlan_id] [-name IFNAME]
+    name_opt, core = _extract_name_opt(args)
+    if len(core) != 2:
+        die("usage: add [interface-name] [vlan_id] [-name IFNAME]")
+
+    parent, vid_s = core
     vid = parse_vlan_id(vid_s)
     ensure_8021q()
-    name = vlan_name(parent, vid, read_name_type())
 
-    # Previously: run([...]) which aborts on error.
-    # Now: if ip(8) says the name is invalid (too long), silently prompt for a
-    # shorter name (suggesting vlan<VID>) and retry until success.
+    # If -name supplied, validate first, else default to parent.VID
+    if name_opt is not None:
+        if not _valid_ifname(name_opt):
+            print(f"Provided -name '{name_opt}' is invalid (must be ≤{MAX_IFNAME_LEN} chars, no whitespace or '/').")
+            # Prompt for a better one, suggesting vlan<VID>
+            name = _prompt_for_ifname(f"vlan{vid}")
+        else:
+            name = name_opt
+    else:
+        name = f"{parent}.{vid}"
+
     base_cmd = ["ip", "link", "add", "link", parent, "name", name, "type", "vlan", "id", str(vid)]
     run_ip_with_ifname_retry(base_cmd, vid=vid)
-
-    # Match vconfig: no extra output on success.
+    # vconfig prints nothing on success
     return 0
 
 
@@ -263,13 +241,6 @@ def cmd_rem(args):
     return 0
 
 
-def cmd_set_name_type(args):
-    if len(args) != 1:
-        die("usage: set_name_type [name-type]")
-    write_name_type(args[0])
-    return 0
-
-
 def _on_off(v):
     if v not in ("0", "1"):
         die("flag value must be 0 or 1")
@@ -277,9 +248,8 @@ def _on_off(v):
 
 
 def cmd_set_flag(args):
-    # vconfig had two forms:
     # set_flag <dev> <0|1>
-    # set_flag <dev> <flagnum> <0|1> (reorder_hdr only)
+    # set_flag <dev> <flagnum> <0|1>
     if len(args) == 2:
         dev, val = args
         run(["ip", "link", "set", "dev", dev, "type", "vlan", "reorder_hdr", _on_off(val)])
@@ -301,13 +271,12 @@ def cmd_set_flag(args):
 
 
 def cmd_set_egress_map(args):
-    # vconfig: set_egress_map <dev> <skb> <qos>
+    # set_egress_map <dev> <skb> <qos>
     if len(args) != 3:
         die("usage: set_egress_map [vlan-name] [skb_priority] [vlan_qos]")
     dev, skb, qos = args
     try:
-        int(skb)
-        int(qos)
+        int(skb); int(qos)
     except ValueError:
         die("skb_priority and vlan_qos must be integers")
     run(["ip", "link", "set", "dev", dev, "type", "vlan", "egress-qos-map", f"{skb}:{qos}"])
@@ -315,14 +284,12 @@ def cmd_set_egress_map(args):
 
 
 def cmd_set_ingress_map(args):
-    # vconfig: set_ingress_map <dev> <skb> <qos>
-    # ip(8) expects qos:skb for ingress
+    # set_ingress_map <dev> <skb> <qos>  (ip expects qos:skb)
     if len(args) != 3:
         die("usage: set_ingress_map [vlan-name] [skb_priority] [vlan_qos]")
     dev, skb, qos = args
     try:
-        int(skb)
-        int(qos)
+        int(skb); int(qos)
     except ValueError:
         die("skb_priority and vlan_qos must be integers")
     run(["ip", "link", "set", "dev", dev, "type", "vlan", "ingress-qos-map", f"{qos}:{skb}"])
@@ -345,7 +312,7 @@ def main():
         "set_flag": cmd_set_flag,
         "set_egress_map": cmd_set_egress_map,
         "set_ingress_map": cmd_set_ingress_map,
-        "set_name_type": cmd_set_name_type,
+        # set_name_type removed; use -name on 'add' instead
     }
     func = dispatch.get(cmd)
     if not func:
